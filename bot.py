@@ -328,6 +328,8 @@ async def admin_extend_days(message: Message, state: FSMContext):
 async def check_subscriptions():
     subscribers = await get_active_subscribers()
     now = datetime.utcnow()
+    tomorrow = now + timedelta(days=1)
+
     for telegram_id, _, _, _, expires_at in subscribers:
         expires = datetime.fromisoformat(expires_at)
         if expires < now:
@@ -343,12 +345,42 @@ async def check_subscriptions():
             except:
                 pass
 
+    async with aiosqlite.connect("bot.db") as db:
+        cursor = await db.execute("""
+            SELECT u.telegram_id, u.first_name, u.last_name, u.username
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.status = 'active'
+              AND date(s.expires_at) = date(?)
+        """, (tomorrow.isoformat(),))
+        rows = await cursor.fetchall()
+
+        for telegram_id, first, last, username in rows:
+            name_parts = [n for n in [first, last] if n]
+            name = " ".join(name_parts) or "Добрый человек"
+            try:
+                await bot.send_message(
+                    telegram_id,
+                    f"🔔 Привет, {name}!\n\n"
+                    f"Ваша подписка на «Умный парикмахер» заканчивается завтра.\n\n"
+                    f"Хотите продлить доступ? Напишите нам или нажмите «Выбрать подписку» в меню.",
+                    reply_markup=InlineKeyboardBuilder()
+                    .button(text="💰 Продлить подписку", callback_data="subscribe_disabled")
+                    .as_markup()
+                )
+            except Exception as e:
+                logger.error(f"Не удалось отправить напоминание {telegram_id}: {e}")
+
 # ========================
 # Запуск
 # ========================
+
 async def main():
     await init_db()
     scheduler = AsyncIOScheduler()
+    # Проверяем каждый день в 09:00 UTC (можно изменить)
+    scheduler.add_job(check_subscriptions, "cron", hour=9, minute=0)
+    # И дополнительно каждые 6 часов для удаления (на случай сбоев)
     scheduler.add_job(check_subscriptions, IntervalTrigger(hours=6))
     scheduler.start()
     dp.include_router(router)
