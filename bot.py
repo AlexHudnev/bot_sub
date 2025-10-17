@@ -46,7 +46,7 @@ class AdminAction(StatesGroup):
 # База данных
 # ========================
 async def init_db():
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -70,7 +70,7 @@ async def init_db():
         await db.commit()
 
 async def create_or_get_user(telegram_id: int, username: str, first_name: str, last_name: str) -> bool:
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         cursor = await db.execute(
             """INSERT OR IGNORE INTO users 
                (telegram_id, username, first_name, last_name) 
@@ -81,13 +81,13 @@ async def create_or_get_user(telegram_id: int, username: str, first_name: str, l
         return cursor.rowcount > 0
 
 async def set_trial_used(user_id: int):
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         await db.execute("UPDATE users SET trial_used = 1 WHERE id = ?", (user_id,))
         await db.commit()
 
 async def add_subscription(user_id: int, days: int):
     expires = datetime.utcnow() + timedelta(days=days)
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         await db.execute(
             "INSERT INTO subscriptions (user_id, expires_at) VALUES (?, ?)",
             (user_id, expires.isoformat())
@@ -95,13 +95,13 @@ async def add_subscription(user_id: int, days: int):
         await db.commit()
 
 async def get_user_by_telegram(telegram_id: int) -> Optional[dict]:
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         cursor = await db.execute("SELECT id, trial_used FROM users WHERE telegram_id = ?", (telegram_id,))
         row = await cursor.fetchone()
         return {"id": row[0], "trial_used": bool(row[1])} if row else None
 
 async def get_user_full_info(telegram_id: int):
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         cursor = await db.execute(
             "SELECT first_name, last_name, username FROM users WHERE telegram_id = ?",
             (telegram_id,)
@@ -117,7 +117,7 @@ async def get_user_full_info(telegram_id: int):
         return None
 
 async def get_active_subscribers():
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         cursor = await db.execute("""
             SELECT u.telegram_id, u.first_name, u.last_name, u.username, s.expires_at 
             FROM subscriptions s
@@ -331,7 +331,7 @@ async def check_subscriptions():
     for telegram_id, _, _, _, expires_at in subscribers:
         expires = datetime.fromisoformat(expires_at)
         if expires < now:
-            async with aiosqlite.connect("bot.db") as db:
+            async with aiosqlite.connect("/db/bot.db") as db:
                 await db.execute("""
                     UPDATE subscriptions SET status = 'expired'
                     WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
