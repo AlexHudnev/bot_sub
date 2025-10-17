@@ -147,9 +147,10 @@ async def cmd_start(message: Message):
     is_new = await create_or_get_user(user.id, user.username or "")
 
     if is_new and WELCOME_VIDEO_FILE_ID:
+        print(WELCOME_VIDEO_FILE_ID)
         await message.answer_video(
             video=WELCOME_VIDEO_FILE_ID,
-            caption="👋 Привет! Добро пожаловать в наше закрытое сообщество!"
+            caption="👋 Привет! Добро пожаловать!"
         )
 
     kb = InlineKeyboardBuilder()
