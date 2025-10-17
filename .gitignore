@@ -1,0 +1,45 @@
+# Виртуальное окружение
+venv/
+env/
+ENV/
+.venv/
+.env
+
+# Локальная база данных
+bot.db
+*.db
+
+# Кэш Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.ipynb_checkpoints
+
+# Окружение и секреты
+.env
+.env.local
+.env.*.local
+
+# Логи
+logs
+*.log
+
+# Docker
+docker-compose.override.yml
+
+# Редакторы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# Тесты и покрытие
+.htmlcov/
+.coverage
+.pytest_cache/
