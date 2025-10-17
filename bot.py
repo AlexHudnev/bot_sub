@@ -215,12 +215,33 @@ async def trial_handler(callback: types.CallbackQuery):
 
     await set_trial_used(user["id"])
     await add_subscription(user["id"], TRIAL_DAYS)
-    await add_to_channel(callback.from_user.id)
+    
+    # Создаём персональную ссылку
+    invite_link = await get_invite_link()
+
+    # Большую кнопку делаем через InlineKeyboard
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🔗 Войти в закрытый канал", url=invite_link)
+    kb.adjust(1)
 
     await callback.message.edit_text(
-        f"✅ Пробный период на {TRIAL_DAYS} дня(ей) активирован!\n"
-        "Вы получили доступ к закрытому каналу."
+        f"✅ Пробный период на {TRIAL_DAYS} дня(ей) активирован!\n\n"
+        f"Нажмите кнопку ниже, чтобы присоединиться:",
+        reply_markup=kb.as_markup()
     )
+
+async def get_invite_link() -> str:
+    """Создаёт одноразовую invite-ссылку на канал"""
+    try:
+        invite = await bot.create_chat_invite_link(
+            chat_id=CHANNEL_ID,
+            member_limit=1,  # только 1 использование
+            expire_date=int((datetime.utcnow() + timedelta(hours=24)).timestamp())
+        )
+        return invite.invite_link
+    except Exception as e:
+        logger.error(f"Не удалось создать invite link: {e}")
+        return "https://t.me"
 
 @router.callback_query(lambda c: c.data == "subscribe_disabled")
 async def subscribe_disabled(callback: types.CallbackQuery):
@@ -345,7 +366,7 @@ async def check_subscriptions():
             except:
                 pass
 
-    async with aiosqlite.connect("bot.db") as db:
+    async with aiosqlite.connect("/db/bot.db") as db:
         cursor = await db.execute("""
             SELECT u.telegram_id, u.first_name, u.last_name, u.username
             FROM subscriptions s
