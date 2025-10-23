@@ -1,12 +1,15 @@
-# bot.py
 import os
 import logging
 from datetime import datetime, timedelta
 from typing import Optional
+import asyncio
+from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, Router, types
-from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.filters import Command, CommandObject
+from aiogram.types import (
+    Message, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery, SuccessfulPayment
+)
+from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
 from aiogram.fsm.state import State, StatesGroup
@@ -14,39 +17,40 @@ from aiogram.fsm.context import FSMContext
 
 import aiosqlite
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
-import asyncio
-from dotenv import load_dotenv
 
 load_dotenv()
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Конфигурация
+# === Конфигурация ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
 TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
 WELCOME_VIDEO_FILE_ID = os.getenv("WELCOME_VIDEO_FILE_ID")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 
+PROVIDER_TOKEN_YOOKASSA = os.getenv("PROVIDER_TOKEN_YOOKASSA")
+PROVIDER_TOKEN_STRIPE = os.getenv("PROVIDER_TOKEN_STRIPE")
+
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 router = Router()
 
-# ========================
-# Состояния для админки
-# ========================
+# === Состояния ===
+class PaymentState(StatesGroup):
+    waiting_for_payment_method = State()
+
 class AdminAction(StatesGroup):
     waiting_for_user_id = State()
     waiting_for_days = State()
     waiting_for_user_id_for_extend = State()
 
-# ========================
-# База данных
-# ========================
+# === БД ===
 async def init_db():
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         await db.execute("""
             CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,10 +71,23 @@ async def init_db():
                 FOREIGN KEY(user_id) REFERENCES users(id)
             )
         """)
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                telegram_payment_charge_id TEXT UNIQUE,
+                user_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                months INTEGER NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT DEFAULT (datetime('now')),
+                updated_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            )
+        """)
         await db.commit()
 
 async def create_or_get_user(telegram_id: int, username: str, first_name: str, last_name: str) -> bool:
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute(
             """INSERT OR IGNORE INTO users 
                (telegram_id, username, first_name, last_name) 
@@ -81,13 +98,13 @@ async def create_or_get_user(telegram_id: int, username: str, first_name: str, l
         return cursor.rowcount > 0
 
 async def set_trial_used(user_id: int):
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         await db.execute("UPDATE users SET trial_used = 1 WHERE id = ?", (user_id,))
         await db.commit()
 
 async def add_subscription(user_id: int, days: int):
     expires = datetime.utcnow() + timedelta(days=days)
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         await db.execute(
             "INSERT INTO subscriptions (user_id, expires_at) VALUES (?, ?)",
             (user_id, expires.isoformat())
@@ -95,13 +112,13 @@ async def add_subscription(user_id: int, days: int):
         await db.commit()
 
 async def get_user_by_telegram(telegram_id: int) -> Optional[dict]:
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("SELECT id, trial_used FROM users WHERE telegram_id = ?", (telegram_id,))
         row = await cursor.fetchone()
         return {"id": row[0], "trial_used": bool(row[1])} if row else None
 
 async def get_user_full_info(telegram_id: int):
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute(
             "SELECT first_name, last_name, username FROM users WHERE telegram_id = ?",
             (telegram_id,)
@@ -117,7 +134,7 @@ async def get_user_full_info(telegram_id: int):
         return None
 
 async def get_active_subscribers():
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("""
             SELECT u.telegram_id, u.first_name, u.last_name, u.username, s.expires_at 
             FROM subscriptions s
@@ -126,39 +143,46 @@ async def get_active_subscribers():
         """)
         return await cursor.fetchall()
 
-# ========================
-# Управление каналом
-# ========================
-async def add_to_channel(telegram_id: int):
+# === Управление доступом ===
+async def get_invite_link() -> str:
     try:
-        await bot.add_chat_member(chat_id=CHANNEL_ID, user_id=telegram_id)
-        logger.info(f"Добавлен в канал: {telegram_id}")
+        invite = await bot.create_chat_invite_link(
+            chat_id=CHANNEL_ID,
+            member_limit=1,
+            expire_date=int((datetime.utcnow() + timedelta(hours=24)).timestamp())
+        )
+        return invite.invite_link
     except Exception as e:
-        logger.error(f"Не удалось добавить {telegram_id}: {e}")
-        try:
-            invite = await bot.create_chat_invite_link(
-                chat_id=CHANNEL_ID,
-                member_limit=1,
-                expire_date=int((datetime.utcnow() + timedelta(hours=1)).timestamp())
-            )
-            await bot.send_message(telegram_id, f"✨ Ваш доступ к каналу:\n{invite.invite_link}")
-        except Exception as ex:
-            logger.error(f"Не удалось создать invite link: {ex}")
+        logger.error(f"Не удалось создать invite link: {e}")
+        return "https://t.me/your_channel"
+
+async def send_invite_button(user_id: int, text: str = "✅ Доступ активирован!"):
+    try:
+        invite_link = await get_invite_link()
+        kb = InlineKeyboardBuilder()
+        kb.button(text="🔗 Войти в закрытый канал", url=invite_link)
+        kb.adjust(1)
+        await bot.send_message(user_id, text, reply_markup=kb.as_markup())
+    except Exception as e:
+        logger.error(f"Не удалось отправить invite кнопку {user_id}: {e}")
+
+async def activate_subscription(telegram_id: int, days: int):
+    user = await get_user_by_telegram(telegram_id)
+    if user:
+        await add_subscription(user["id"], days)
 
 async def remove_from_channel(telegram_id: int):
     try:
         await bot.ban_chat_member(chat_id=CHANNEL_ID, user_id=telegram_id)
         await asyncio.sleep(1)
         await bot.unban_chat_member(chat_id=CHANNEL_ID, user_id=telegram_id)
-        logger.info(f"Удалён из канала: {telegram_id}")
     except Exception as e:
         logger.error(f"Не удалось удалить {telegram_id}: {e}")
 
-# ========================
-# Обработчики
-# ========================
+# === Обработчики ===
 @router.message(Command("start"))
-async def cmd_start(message: Message):
+async def cmd_start(message: Message, state: FSMContext):
+    await state.clear()
     user = message.from_user
     is_new = await create_or_get_user(
         user.id,
@@ -171,36 +195,34 @@ async def cmd_start(message: Message):
         video_id = WELCOME_VIDEO_FILE_ID.strip()
         if video_id.startswith("BAAC"):
             try:
-                await message.answer_video(
-                    video=video_id,
-                    caption="👋 Привет! Добро пожаловать в онлайн-салон!"
-                )
+                await message.answer_video(video=video_id, caption="👋 Привет! Добро пожаловать в онлайн-салон!")
             except Exception as e:
-                logger.error(f"Ошибка отправки видео: {e}")
+                logger.error(f"Ошибка видео: {e}")
 
     welcome_text = (
         "🌟 Онлайн-салон \"Умный парикмахер\" 🌟\n\n"
-        "Цена: 299 RUB\n"
+        "Цена: от 299 RUB / 3 USD\n"
         "Пробный период: 7 дней бесплатно\n\n"
         "---\n\n"
         "Что ты получаешь:\n\n"
-        "• Полный доступ к группе:\n"
-        "  Рабочие лайфхаки, знания по домашним окрашиваниям, укладкам и уходу.\n\n"
-        "• Онлайн-консультации:\n"
-        "  Ведущие стилисты и колористы всегда готовы помочь.\n\n"
-        "• Пробный период:\n"
-        "  У тебя есть возможность попробовать 7 дней бесплатно.\n\n"
+        "• Полный доступ к группе\n"
+        "• Онлайн-консультации от стилистов\n"
+        "• Пробный период — 7 дней бесплатно\n\n"
         "---\n\n"
-        "После пробного периода:\n"
-        "Ты сам решаешь, продолжать ли оплачивать доступ или нет."
+        "После пробного периода — ты сам решаешь, продолжать ли оплату."
     )
 
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Получить 7 дней бесплатно", callback_data="trial")
-    kb.button(text="💰 Выбрать подписку", callback_data="subscribe_disabled")
+    kb.button(text="💰 Выбрать подписку", callback_data="select_duration")
     kb.adjust(1)
-
     await message.answer(welcome_text, reply_markup=kb.as_markup())
+
+@router.callback_query(lambda c: c.data == "start")
+async def back_to_start(callback: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await cmd_start(callback.message, state)
+    await callback.answer()
 
 @router.callback_query(lambda c: c.data == "trial")
 async def trial_handler(callback: types.CallbackQuery):
@@ -208,48 +230,125 @@ async def trial_handler(callback: types.CallbackQuery):
     if not user:
         await callback.answer("Ошибка. Попробуйте /start", show_alert=True)
         return
-
     if user["trial_used"]:
         await callback.answer("Вы уже использовали пробный период.", show_alert=True)
         return
-
     await set_trial_used(user["id"])
     await add_subscription(user["id"], TRIAL_DAYS)
-    
-    # Создаём персональную ссылку
-    invite_link = await get_invite_link()
+    await send_invite_button(callback.from_user.id, f"✅ Пробный период на {TRIAL_DAYS} дня(ей) активирован!")
 
-    # Большую кнопку делаем через InlineKeyboard
+@router.callback_query(lambda c: c.data == "select_duration")
+async def select_duration(callback: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardBuilder()
-    kb.button(text="🔗 Войти в закрытый канал", url=invite_link)
+    for months in [1, 3, 6, 12]:
+        kb.button(text=f"{months} мес", callback_data=f"duration_{months}")
+    kb.button(text="⬅️ Назад", callback_data="start")
     kb.adjust(1)
+    await callback.message.edit_text("На какой срок вам нужна подписка?", reply_markup=kb.as_markup())
+    await state.set_state(PaymentState.waiting_for_payment_method)
 
-    await callback.message.edit_text(
-        f"✅ Пробный период на {TRIAL_DAYS} дня(ей) активирован!\n\n"
-        f"Нажмите кнопку ниже, чтобы присоединиться:",
-        reply_markup=kb.as_markup()
-    )
-
-async def get_invite_link() -> str:
-    """Создаёт одноразовую invite-ссылку на канал"""
+@router.callback_query(lambda c: c.data.startswith("duration_"))
+async def choose_payment_method(callback: types.CallbackQuery, state: FSMContext):
     try:
-        invite = await bot.create_chat_invite_link(
-            chat_id=CHANNEL_ID,
-            member_limit=1,  # только 1 использование
-            expire_date=int((datetime.utcnow() + timedelta(hours=24)).timestamp())
+        months = int(callback.data.split("_", 1)[1])
+    except (ValueError, IndexError):
+        await callback.answer("Ошибка выбора срока.", show_alert=True)
+        return
+
+    await state.update_data(months=months)
+
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🇷🇺 ЮKassa (RUB)", callback_data="pay_yookassa")
+    # kb.button(text="🌍 Stripe (USD)", callback_data="pay_stripe")
+    kb.button(text="⬅️ Назад", callback_data="select_duration")
+    kb.adjust(1)
+    await callback.message.edit_text("Выберите способ оплаты:", reply_markup=kb.as_markup())
+
+@router.callback_query(lambda c: c.data in ["pay_yookassa", "pay_stripe"])
+async def send_invoice_by_method(callback: types.CallbackQuery, state: FSMContext):
+    data = await state.get_data()
+    months = data.get("months")
+    if not months:
+        await callback.answer("Сначала выберите срок подписки.", show_alert=True)
+        return
+
+    # Цены по сроку
+    rub_prices = {1: 299, 3: 799, 6: 1499, 12: 2499}
+    usd_prices = {1: 3, 3: 8, 6: 15, 12: 25}
+
+    provider_key = callback.data
+    if provider_key == "pay_yookassa":
+        price = rub_prices.get(months, 299)
+        currency = "RUB"
+        provider_token = PROVIDER_TOKEN_YOOKASSA
+    else:  # pay_stripe
+        price = usd_prices.get(months, 3)
+        currency = "USD"
+        provider_token = PROVIDER_TOKEN_STRIPE
+
+    if not provider_token:
+        await callback.answer("Платежи через этот способ временно недоступны.", show_alert=True)
+        return
+
+    title = f"Подписка на {months} мес"
+    description = f"Доступ к закрытому каналу на {months} месяцев"
+    payload = f"sub_{callback.from_user.id}_{months}_{provider_key}"
+    prices = [LabeledPrice(label=title, amount=price * 100)]
+
+    await bot.send_invoice(
+        chat_id=callback.message.chat.id,
+        title=title,
+        description=description,
+        payload=payload,
+        provider_token=provider_token,
+        currency=currency,
+        prices=prices,
+        start_parameter=f"sub_{months}_{provider_key}",
+        need_name=False,
+        need_phone_number=False,
+        need_email=False,
+        need_shipping_address=False,
+        is_flexible=False
+    )
+    await callback.answer()
+
+# === Обработка платежей ===
+@router.pre_checkout_query()
+async def pre_checkout(pre_checkout_query: PreCheckoutQuery):
+    await bot.answer_pre_checkout_query(pre_checkout_query.id, ok=True)
+
+@router.message(lambda m: m.content_type == "successful_payment")
+async def successful_payment_handler(message: Message):
+    payment = message.successful_payment
+    payload = payment.invoice_payload  # "sub_12345_3_pay_yookassa"
+    parts = payload.split("_")
+    if len(parts) < 4:
+        logger.error(f"Некорректный payload: {payload}")
+        return
+
+    try:
+        user_id = int(parts[1])
+        months = int(parts[2])
+    except (ValueError, IndexError):
+        logger.error(f"Ошибка разбора payload: {payload}")
+        return
+
+    amount = payment.total_amount / 100
+    charge_id = payment.telegram_payment_charge_id
+
+    async with aiosqlite.connect("bot.db") as db:
+        await db.execute(
+            """INSERT INTO payments 
+               (telegram_payment_charge_id, user_id, amount, months, status) 
+               VALUES (?, ?, ?, ?, 'paid')""",
+            (charge_id, user_id, amount, months)
         )
-        return invite.invite_link
-    except Exception as e:
-        logger.error(f"Не удалось создать invite link: {e}")
-        return "https://t.me"
+        await db.commit()
 
-@router.callback_query(lambda c: c.data == "subscribe_disabled")
-async def subscribe_disabled(callback: types.CallbackQuery):
-    await callback.answer("Подписка скоро станет доступна!", show_alert=True)
+    await activate_subscription(user_id, months * 30)
+    await send_invite_button(user_id, "✅ Оплата прошла успешно! Доступ активирован.")
 
-# ========================
-# Админка с кнопками
-# ========================
+# === Админка ===
 def get_admin_menu():
     kb = InlineKeyboardBuilder()
     kb.button(text="➕ Добавить пользователя", callback_data="admin_add")
@@ -268,7 +367,7 @@ async def admin_menu(message: Message):
 async def admin_add_start(callback: types.CallbackQuery, state: FSMContext):
     if callback.from_user.id not in ADMIN_IDS:
         return
-    await callback.message.edit_text("Введите ID пользователя (только цифры):")
+    await callback.message.edit_text("Введите ID пользователя:")
     await state.set_state(AdminAction.waiting_for_user_id)
 
 @router.callback_query(lambda c: c.data == "admin_extend")
@@ -301,8 +400,8 @@ async def admin_add_user_id(message: Message, state: FSMContext):
         return
     try:
         user_id = int(message.text.strip())
-        await add_to_channel(user_id)
-        await message.answer(f"✅ Пользователь добавлен в канал.", reply_markup=get_admin_menu())
+        await send_invite_button(user_id, "✅ Вам выдан доступ к каналу!")
+        await message.answer("Пользователь добавлен.", reply_markup=get_admin_menu())
     except ValueError:
         await message.answer("❌ Неверный ID. Введите только цифры:", reply_markup=get_admin_menu())
     await state.clear()
@@ -328,33 +427,30 @@ async def admin_extend_days(message: Message, state: FSMContext):
         days = int(message.text.strip())
         data = await state.get_data()
         user_id = data["target_user_id"]
-
         user = await get_user_by_telegram(user_id)
         if not user:
             await message.answer("❌ Пользователь не найден.", reply_markup=get_admin_menu())
         else:
             await add_subscription(user["id"], days)
-            await add_to_channel(user_id)
+            await send_invite_button(user_id, f"✅ Подписка продлена на {days} дней.")
             user_info = await get_user_full_info(user_id)
             name = user_info["display_name"] if user_info else f"ID {user_id}"
-            await message.answer(f"✅ Подписка для {name} продлена на {days} дней.", reply_markup=get_admin_menu())
+            await message.answer(f"✅ Подписка для {name} продлена.", reply_markup=get_admin_menu())
     except ValueError:
         await message.answer("❌ Введите число дней:")
         return
     await state.clear()
 
-# ========================
-# Фоновые задачи
-# ========================
+# === Фоновые задачи ===
 async def check_subscriptions():
-    subscribers = await get_active_subscribers()
     now = datetime.utcnow()
     tomorrow = now + timedelta(days=1)
 
+    subscribers = await get_active_subscribers()
     for telegram_id, _, _, _, expires_at in subscribers:
         expires = datetime.fromisoformat(expires_at)
         if expires < now:
-            async with aiosqlite.connect("/db/bot.db") as db:
+            async with aiosqlite.connect("bot.db") as db:
                 await db.execute("""
                     UPDATE subscriptions SET status = 'expired'
                     WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
@@ -366,9 +462,9 @@ async def check_subscriptions():
             except:
                 pass
 
-    async with aiosqlite.connect("/db/bot.db") as db:
+    async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("""
-            SELECT u.telegram_id, u.first_name, u.last_name, u.username
+            SELECT u.telegram_id, u.first_name, u.last_name
             FROM subscriptions s
             JOIN users u ON s.user_id = u.id
             WHERE s.status = 'active'
@@ -376,32 +472,27 @@ async def check_subscriptions():
         """, (tomorrow.isoformat(),))
         rows = await cursor.fetchall()
 
-        for telegram_id, first, last, username in rows:
-            name_parts = [n for n in [first, last] if n]
-            name = " ".join(name_parts) or "Добрый человек"
+        for telegram_id, first, last in rows:
+            name = (first or "") + (" " + last if last else "")
+            name = name.strip() or "Добрый человек"
             try:
+                kb = InlineKeyboardBuilder()
+                kb.button(text="💰 Продлить подписку", callback_data="select_duration")
                 await bot.send_message(
                     telegram_id,
                     f"🔔 Привет, {name}!\n\n"
-                    f"Ваша подписка на «Умный парикмахер» заканчивается завтра.\n\n"
-                    f"Хотите продлить доступ? Напишите нам или нажмите «Выбрать подписку» в меню.",
-                    reply_markup=InlineKeyboardBuilder()
-                    .button(text="💰 Продлить подписку", callback_data="subscribe_disabled")
-                    .as_markup()
+                    f"Ваша подписка заканчивается завтра.\n"
+                    f"Хотите продлить?",
+                    reply_markup=kb.as_markup()
                 )
             except Exception as e:
-                logger.error(f"Не удалось отправить напоминание {telegram_id}: {e}")
+                logger.error(f"Напоминание не отправлено {telegram_id}: {e}")
 
-# ========================
-# Запуск
-# ========================
-
+# === Запуск ===
 async def main():
     await init_db()
     scheduler = AsyncIOScheduler()
-    # Проверяем каждый день в 09:00 UTC (можно изменить)
-    scheduler.add_job(check_subscriptions, "cron", hour=9, minute=0)
-    # И дополнительно каждые 6 часов для удаления (на случай сбоев)
+    scheduler.add_job(check_subscriptions, CronTrigger(hour=9, minute=0))
     scheduler.add_job(check_subscriptions, IntervalTrigger(hours=6))
     scheduler.start()
     dp.include_router(router)

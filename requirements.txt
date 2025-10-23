@@ -2,3 +2,4 @@ aiogram==3.13.1
 aiosqlite
 APScheduler
 python-dotenv
+requests
