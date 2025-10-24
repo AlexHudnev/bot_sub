@@ -154,7 +154,7 @@ async def get_invite_link() -> str:
         return invite.invite_link
     except Exception as e:
         logger.error(f"Не удалось создать invite link: {e}")
-        return "https://t.me/your_channel"
+        return "https://web.telegram.org/k/#5411737851"
 
 async def send_invite_button(user_id: int, text: str = "✅ Доступ активирован!"):
     try:
@@ -240,7 +240,7 @@ async def trial_handler(callback: types.CallbackQuery):
 @router.callback_query(lambda c: c.data == "select_duration")
 async def select_duration(callback: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardBuilder()
-    for months in [1, 3, 6, 12]:
+    for months in [1, 3]:
         kb.button(text=f"{months} мес", callback_data=f"duration_{months}")
     kb.button(text="⬅️ Назад", callback_data="start")
     kb.adjust(1)
@@ -250,7 +250,7 @@ async def select_duration(callback: types.CallbackQuery, state: FSMContext):
 @router.callback_query(lambda c: c.data == "subscribe_disabled")
 async def subscribe_disabled(callback: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardBuilder()
-    for months in [1, 3, 6, 12]:
+    for months in [1, 3]:
         kb.button(text=f"{months} мес", callback_data=f"duration_{months}")
     kb.button(text="⬅️ Назад", callback_data="start")
     kb.adjust(1)
@@ -270,6 +270,7 @@ async def choose_payment_method(callback: types.CallbackQuery, state: FSMContext
     kb = InlineKeyboardBuilder()
     kb.button(text="🇷🇺 ЮKassa (RUB)", callback_data="pay_yookassa")
     # kb.button(text="🌍 Stripe (USD)", callback_data="pay_stripe")
+    kb.button(text="🛠 Поддержка", url="https://web.telegram.org/k/#5411737851")
     kb.button(text="⬅️ Назад", callback_data="select_duration")
     kb.adjust(1)
     await callback.message.edit_text("Выберите способ оплаты:", reply_markup=kb.as_markup())
