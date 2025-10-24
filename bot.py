@@ -247,6 +247,16 @@ async def select_duration(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("На какой срок вам нужна подписка?", reply_markup=kb.as_markup())
     await state.set_state(PaymentState.waiting_for_payment_method)
 
+@router.callback_query(lambda c: c.data == "subscribe_disabled")
+async def subscribe_disabled(callback: types.CallbackQuery, state: FSMContext):
+    kb = InlineKeyboardBuilder()
+    for months in [1, 3, 6, 12]:
+        kb.button(text=f"{months} мес", callback_data=f"duration_{months}")
+    kb.button(text="⬅️ Назад", callback_data="start")
+    kb.adjust(1)
+    await callback.message.edit_text("На какой срок вам нужна подписка?", reply_markup=kb.as_markup())
+    await state.set_state(PaymentState.waiting_for_payment_method)
+
 @router.callback_query(lambda c: c.data.startswith("duration_"))
 async def choose_payment_method(callback: types.CallbackQuery, state: FSMContext):
     try:
@@ -263,6 +273,19 @@ async def choose_payment_method(callback: types.CallbackQuery, state: FSMContext
     kb.button(text="⬅️ Назад", callback_data="select_duration")
     kb.adjust(1)
     await callback.message.edit_text("Выберите способ оплаты:", reply_markup=kb.as_markup())
+
+
+def pluralize_months(n: int) -> str:
+    if n % 100 in (11, 12, 13, 14):
+        return "месяцев"
+    last_digit = n % 10
+    if last_digit == 1:
+        return "месяц"
+    elif last_digit in (2, 3, 4):
+        return "месяца"
+    else:
+        return "месяцев"
+
 
 @router.callback_query(lambda c: c.data in ["pay_yookassa", "pay_stripe"])
 async def send_invoice_by_method(callback: types.CallbackQuery, state: FSMContext):
@@ -291,7 +314,7 @@ async def send_invoice_by_method(callback: types.CallbackQuery, state: FSMContex
         return
 
     title = f"Подписка на {months} мес"
-    description = f"Доступ к закрытому каналу на {months} месяцев"
+    description = f"Доступ к закрытому каналу на {months} {pluralize_months(months)}"
     payload = f"sub_{callback.from_user.id}_{months}_{provider_key}"
     prices = [LabeledPrice(label=title, amount=price * 100)]
 
