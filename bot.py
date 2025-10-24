@@ -464,6 +464,20 @@ async def admin_extend_days(message: Message, state: FSMContext):
         return
     await state.clear()
 
+
+async def has_active_subscription_by_telegram(telegram_id: int) -> bool:
+    """Проверяет наличие активной (не просроченной) подписки по telegram_id."""
+    now_iso = datetime.utcnow().isoformat()
+    async with aiosqlite.connect("bot.db") as db:
+        cursor = await db.execute("""
+            SELECT 1
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.id
+            WHERE u.telegram_id = ? AND s.expires_at > ? AND s.status = 'active'
+            LIMIT 1
+        """, (telegram_id, now_iso))
+        return await cursor.fetchone() is not None
+
 # === Фоновые задачи ===
 async def check_subscriptions():
     now = datetime.utcnow()
@@ -479,6 +493,11 @@ async def check_subscriptions():
                     WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
                 """, (telegram_id,))
                 await db.commit()
+            
+            has_new_sub = await has_active_subscription_by_telegram(telegram_id)
+            if has_new_sub:
+                logger.info(f"Пропускаем удаление {telegram_id}: обнаружена новая активная подписка.")
+                continue
             await remove_from_channel(telegram_id)
             try:
                 await bot.send_message(telegram_id, "❌ Ваша подписка истекла.")
