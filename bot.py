@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # === Конфигурация ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "7"))
+TRIAL_DAYS = int(os.getenv("TRIAL_DAYS", "2"))
 WELCOME_VIDEO_FILE_ID = os.getenv("WELCOME_VIDEO_FILE_ID")
 ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("ADMIN_IDS") else []
 
@@ -202,18 +202,18 @@ async def cmd_start(message: Message, state: FSMContext):
     welcome_text = (
         "🌟 Онлайн-салон \"Умный парикмахер\" 🌟\n\n"
         "Цена: от 299 RUB / 3 USD\n"
-        "Пробный период: 7 дней бесплатно\n\n"
+        "Пробный период: 2 дня бесплатно\n\n"
         "---\n\n"
         "Что ты получаешь:\n\n"
         "• Полный доступ к группе\n"
         "• Онлайн-консультации от стилистов\n"
-        "• Пробный период — 7 дней бесплатно\n\n"
+        "• Пробный период — 2 дня бесплатно\n\n"
         "---\n\n"
         "После пробного периода — ты сам решаешь, продолжать ли оплату."
     )
 
     kb = InlineKeyboardBuilder()
-    kb.button(text="✅ Получить 7 дней бесплатно", callback_data="trial")
+    kb.button(text="✅ Получить 2 дня бесплатно", callback_data="trial")
     kb.button(text="💰 Выбрать подписку", callback_data="select_duration")
     kb.adjust(1)
     await message.answer(welcome_text, reply_markup=kb.as_markup())
