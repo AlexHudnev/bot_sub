@@ -485,25 +485,25 @@ async def check_subscriptions():
     tomorrow = now + timedelta(days=1)
 
     subscribers = await get_active_subscribers()
-    for telegram_id, _, _, _, expires_at in subscribers:
-        expires = datetime.fromisoformat(expires_at)
-        if expires < now:
-            async with aiosqlite.connect("bot.db") as db:
-                await db.execute("""
-                    UPDATE subscriptions SET status = 'expired'
-                    WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-                """, (telegram_id,))
-                await db.commit()
+    # for telegram_id, _, _, _, expires_at in subscribers:
+    #     expires = datetime.fromisoformat(expires_at)
+    #     if expires < now:
+    #         async with aiosqlite.connect("bot.db") as db:
+    #             await db.execute("""
+    #                 UPDATE subscriptions SET status = 'expired'
+    #                 WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
+    #             """, (telegram_id,))
+    #             await db.commit()
             
-            has_new_sub = await has_active_subscription_by_telegram(telegram_id)
-            if has_new_sub:
-                logger.info(f"Пропускаем удаление {telegram_id}: обнаружена новая активная подписка.")
-                continue
-            await remove_from_channel(telegram_id)
-            try:
-                await bot.send_message(telegram_id, "❌ Ваша подписка истекла.")
-            except:
-                pass
+    #         has_new_sub = await has_active_subscription_by_telegram(telegram_id)
+    #         if has_new_sub:
+    #             logger.info(f"Пропускаем удаление {telegram_id}: обнаружена новая активная подписка.")
+    #             continue
+    #         await remove_from_channel(telegram_id)
+    #         try:
+    #             await bot.send_message(telegram_id, "❌ Ваша подписка истекла.")
+    #         except:
+    #             pass
 
     async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("""
