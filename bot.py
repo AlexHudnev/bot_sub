@@ -1,6 +1,7 @@
 import os
 import logging
 from datetime import datetime, timedelta
+import random
 from typing import Optional
 import asyncio
 from dotenv import load_dotenv
@@ -418,12 +419,11 @@ async def admin_list_subs(callback: types.CallbackQuery):
                 display_name += f" (@{username})"
             base_text += f"• {display_name} [<code>{tg_id}</code>] до {exp.split('T')[0]}\n"
 
-    # Добавляем невидимый уникальный маркер (например, timestamp)
-    unique_suffix = f"\n<!-- {int(datetime.utcnow().timestamp())} -->"
-    full_text = base_text + unique_suffix
+    # Добавляем невидимый уникальный суффикс
+    unique_text = base_text + f"\u200B{random.randint(1, 999999)}"
 
     await callback.message.edit_text(
-        full_text,
+        unique_text,
         parse_mode=ParseMode.HTML,
         reply_markup=get_admin_menu()
     )
