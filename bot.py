@@ -35,6 +35,7 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("
 
 PROVIDER_TOKEN_YOOKASSA = os.getenv("PROVIDER_TOKEN_YOOKASSA")
 PROVIDER_TOKEN_STRIPE = os.getenv("PROVIDER_TOKEN_STRIPE")
+ITEMS_PER_PAGE = 20
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -402,12 +403,52 @@ async def admin_extend_start(callback: types.CallbackQuery, state: FSMContext):
     await callback.message.edit_text("Введите ID пользователя:")
     await state.set_state(AdminAction.waiting_for_user_id_for_extend)
 
-@router.callback_query(lambda c: c.data == "admin_list")
-async def admin_list_subs(callback: types.CallbackQuery):
-    if callback.from_user.id not in ADMIN_IDS:
-        return
+def get_pagination_keyboard(current_page: int, total_pages: int):
+    builder = InlineKeyboardBuilder()
+    buttons = []
 
-    # Получаем ВСЕ подписки (активные и неактивные)
+    if total_pages > 1:
+        if current_page > 1:
+            buttons.append(types.InlineKeyboardButton(text="⬅️ Назад", callback_data=f"admin_list_page:{current_page - 1}"))
+        if current_page < total_pages:
+            buttons.append(types.InlineKeyboardButton(text="Вперёд ➡️", callback_data=f"admin_list_page:{current_page + 1}"))
+
+    if buttons:
+        builder.row(*buttons)
+
+    builder.row(types.InlineKeyboardButton(text="⬅️ В админ-меню", callback_data="admin_menu"))
+    return builder.as_markup()
+
+
+async def format_subscriptions_page(subs, page: int, total_pages: int) -> str:
+    text = f"<b>Все подписки</b> (стр. {page}/{total_pages})\n\n"
+    if not subs:
+        return text + "Нет данных."
+
+    for tg_id, first, last, username, expires_at, status in subs:
+        # Имя
+        name_parts = [part for part in [first, last] if part]
+        display_name = " ".join(name_parts) if name_parts else "Без имени"
+        if username:
+            display_name += f" (@{username})"
+
+        # Дата
+        date_str = expires_at.split("T")[0] if "T" in expires_at else expires_at
+
+        # Статус
+        status_display = {
+            "active": "✅ активна",
+            "expired": "❌ истекла",
+        }.get(status, f"ℹ️ {status}")
+
+        text += (
+            f"• {display_name} [<code>{tg_id}</code>]\n"
+            f"  до {date_str} — {status_display}\n\n"
+        )
+    return text
+
+async def fetch_all_subscriptions():
+    """Получает все подписки с данными пользователей из вашей БД."""
     async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("""
             SELECT 
@@ -421,41 +462,65 @@ async def admin_list_subs(callback: types.CallbackQuery):
             JOIN users u ON s.user_id = u.id
             ORDER BY s.expires_at DESC
         """)
-        all_subs = await cursor.fetchall()
+        return await cursor.fetchall()
 
-    if not all_subs:
-        base_text = "Нет подписок в базе."
-    else:
-        base_text = "<b>Все подписки:</b>\n\n"
-        for tg_id, first, last, username, exp, status in all_subs:
-            # Формируем имя
-            name_parts = [part for part in [first, last] if part]
-            display_name = " ".join(name_parts) if name_parts else "Без имени"
-            if username:
-                display_name += f" (@{username})"
+@router.callback_query(lambda c: c.data == "admin_list")
+async def admin_list_subs(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
 
-            # Форматируем дату (убираем время, если нужно)
-            date_part = exp.split("T")[0] if "T" in exp else exp
+    all_subs = await fetch_all_subscriptions()
+    total = len(all_subs)
+    total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
 
-            # Отображаем статус цветом или пометкой (в тексте — просто скобки)
-            status_label = {
-                "active": "✅ активна",
-                "expired": "❌ истекла",
-                "cancelled": "🚫 отменена"
-            }.get(status, status)
+    if total == 0:
+        await callback.message.edit_text("Нет подписок в базе.", reply_markup=get_admin_menu())
+        await callback.answer()
+        return
 
-            base_text += (
-                f"• {display_name} [<code>{tg_id}</code>]\n"
-                f"  до {date_part} — {status_label}\n\n"
-            )
-
-    # Уникальный суффикс для обхода кэширования Telegram
-    unique_text = base_text + f"\u200B{random.randint(1, 999999)}"
+    # Первая страница
+    page_subs = all_subs[:ITEMS_PER_PAGE]
+    text = await format_subscriptions_page(page_subs, page=1, total_pages=total_pages)
+    # Обход кэширования Telegram
+    text += f"\u200B{random.randint(1, 999999)}"
 
     await callback.message.edit_text(
-        unique_text,
+        text,
         parse_mode=ParseMode.HTML,
-        reply_markup=get_admin_menu()
+        reply_markup=get_pagination_keyboard(1, total_pages)
+    )
+    await callback.answer()
+
+@router.callback_query(lambda c: c.data.startswith("admin_list_page:"))
+async def admin_list_page_handler(callback: types.CallbackQuery):
+    if callback.from_user.id not in ADMIN_IDS:
+        return
+
+    try:
+        page = int(callback.data.split(":")[1])
+    except (ValueError, IndexError):
+        await callback.answer("Ошибка: неверный номер страницы.", show_alert=True)
+        return
+
+    all_subs = await fetch_all_subscriptions()
+    total = len(all_subs)
+    total_pages = max(1, (total + ITEMS_PER_PAGE - 1) // ITEMS_PER_PAGE)
+
+    if page < 1 or page > total_pages:
+        await callback.answer("Такой страницы не существует.", show_alert=True)
+        return
+
+    start = (page - 1) * ITEMS_PER_PAGE
+    end = start + ITEMS_PER_PAGE
+    page_subs = all_subs[start:end]
+
+    text = await format_subscriptions_page(page_subs, page, total_pages)
+    text += f"\u200B{random.randint(1, 999999)}"  # уникальный суффикс
+
+    await callback.message.edit_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_pagination_keyboard(page, total_pages)
     )
     await callback.answer()
 
