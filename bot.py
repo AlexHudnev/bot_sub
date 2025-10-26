@@ -405,18 +405,29 @@ async def admin_extend_start(callback: types.CallbackQuery, state: FSMContext):
 async def admin_list_subs(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
+
     subs = await get_active_subscribers()
     if not subs:
-        text = "Нет активных подписок."
+        base_text = "Нет активных подписок."
     else:
-        text = "<b>Активные подписчики:</b>\n\n"
+        base_text = "<b>Активные подписчики:</b>\n\n"
         for tg_id, first, last, username, exp in subs:
             name_parts = [part for part in [first, last] if part]
             display_name = " ".join(name_parts) if name_parts else "Без имени"
             if username:
                 display_name += f" (@{username})"
-            text += f"• {display_name} [<code>{tg_id}</code>] до {exp.split('T')[0]}\n"
-    await callback.message.edit_text(text, parse_mode=ParseMode.HTML, reply_markup=get_admin_menu())
+            base_text += f"• {display_name} [<code>{tg_id}</code>] до {exp.split('T')[0]}\n"
+
+    # Добавляем невидимый уникальный маркер (например, timestamp)
+    unique_suffix = f"\n<!-- {int(datetime.utcnow().timestamp())} -->"
+    full_text = base_text + unique_suffix
+
+    await callback.message.edit_text(
+        full_text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=get_admin_menu()
+    )
+    await callback.answer()
 
 @router.message(AdminAction.waiting_for_user_id)
 async def admin_add_user_id(message: Message, state: FSMContext):
