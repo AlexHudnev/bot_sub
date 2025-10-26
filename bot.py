@@ -416,7 +416,7 @@ def get_pagination_keyboard(current_page: int, total_pages: int):
     if buttons:
         builder.row(*buttons)
 
-    builder.row(types.InlineKeyboardButton(text="⬅️ В админ-меню", callback_data="admin_menu"))
+    builder.row(types.InlineKeyboardButton(text="⬅️ В админ-меню", callback_data="admin"))
     return builder.as_markup()
 
 
