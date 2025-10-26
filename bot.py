@@ -592,11 +592,12 @@ async def check_subscriptions():
     for telegram_id, _, _, _, expires_at in subscribers:
         expires = datetime.fromisoformat(expires_at)
         if expires < now:
-            async with aiosqlite.connect("/db/bot.db") as db:
+            async with aiosqlite.connect("/db/bot.db") as db:  # ← исправлено
                 await db.execute("""
                     UPDATE subscriptions SET status = 'expired'
-                    WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
-                """, (telegram_id,))
+                    WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?) 
+                      AND expires_at = ?
+                """, (telegram_id, expires_at))
                 await db.commit()
             
             has_new_sub = await has_active_subscription_by_telegram(telegram_id)
@@ -682,10 +683,27 @@ async def send_one_time_expired_notifications():
                 await db.commit()
             
 
+async def activate_valid_subscriptions():
+    """
+    Устанавливает статус 'active' для всех подписок, у которых expires_at > текущего времени.
+    Полезно при восстановлении после сбоя или миграции.
+    """
+    now_iso = datetime.utcnow().isoformat()
+    async with aiosqlite.connect("/db/bot.db") as db:
+        await db.execute("""
+            UPDATE subscriptions 
+            SET status = 'active'
+            WHERE datetime(expires_at) > datetime(?)
+              AND status != 'active'
+        """, (now_iso,))
+        changed = db.total_changes
+        await db.commit()
+        logger.info(f"Активировано {changed} просроченных, но ещё действующих подписок.")
+
 # === Запуск ===
 async def main():
     await init_db()
-    await send_one_time_expired_notifications() 
+    await activate_valid_subscriptions()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_subscriptions, CronTrigger(hour=9, minute=0))
     scheduler.add_job(check_subscriptions, IntervalTrigger(hours=6))
