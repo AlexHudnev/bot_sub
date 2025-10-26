@@ -415,8 +415,6 @@ def get_pagination_keyboard(current_page: int, total_pages: int):
 
     if buttons:
         builder.row(*buttons)
-
-    builder.row(types.InlineKeyboardButton(text="⬅️ В админ-меню", callback_data="admin"))
     return builder.as_markup()
 
 
@@ -669,39 +667,25 @@ async def check_subscriptions():
 
 
 async def send_one_time_expired_notifications():
-    """Один раз при запуске отправить уведомление тем, у кого подписка просрочена и нет новой."""
-    now_iso = datetime.utcnow().isoformat()
-    async with aiosqlite.connect("/db/bot.db") as db:
-        # Находим всех пользователей с просроченными подписками (status = 'active', но expires_at < now)
-        cursor = await db.execute("""
-            SELECT DISTINCT u.telegram_id
-            FROM subscriptions s
-            JOIN users u ON s.user_id = u.id
-            WHERE s.status = 'active' AND s.expires_at < ?
-        """, (now_iso,))
-        expired_users = await cursor.fetchall()
+    now = datetime.utcnow()
+    tomorrow = now + timedelta(days=1)
 
-        for (telegram_id,) in expired_users:
-            # Проверяем, есть ли у этого пользователя какая-нибудь другая активная (не просроченная) подписка
-            has_active = await has_active_subscription_by_telegram(telegram_id)
-            if has_active:
-                continue  # Пропускаем — есть новая подписка
-
-            try:
-                kb = InlineKeyboardBuilder()
-                kb.button(text="💰 Продлить подписку", callback_data="select_duration")
-                await bot.send_message(
-                    telegram_id,
-                    "❌ Ваша подписка истекла. Хотите продлить доступ?",
-                    reply_markup=kb.as_markup()
-                )
-                logger.info(f"Отправлено однократное уведомление о просрочке пользователю {telegram_id}")
-            except Exception as e:
-                logger.warning(f"Не удалось отправить уведомление {telegram_id}: {e}")
+    subscribers = await get_active_subscribers()
+    for telegram_id, _, _, _, expires_at in subscribers:
+        expires = datetime.fromisoformat(expires_at)
+        if expires < now:
+            async with aiosqlite.connect("/db/bot.db") as db:
+                await db.execute("""
+                    UPDATE subscriptions SET status = 'expired'
+                    WHERE user_id = (SELECT id FROM users WHERE telegram_id = ?)
+                """, (telegram_id,))
+                await db.commit()
+            
 
 # === Запуск ===
 async def main():
     await init_db()
+    await send_one_time_expired_notifications() 
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_subscriptions, CronTrigger(hour=9, minute=0))
     scheduler.add_job(check_subscriptions, IntervalTrigger(hours=6))
