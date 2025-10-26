@@ -407,19 +407,49 @@ async def admin_list_subs(callback: types.CallbackQuery):
     if callback.from_user.id not in ADMIN_IDS:
         return
 
-    subs = await get_active_subscribers()
-    if not subs:
-        base_text = "Нет активных подписок."
+    # Получаем ВСЕ подписки (активные и неактивные)
+    async with aiosqlite.connect("bot.db") as db:
+        cursor = await db.execute("""
+            SELECT 
+                u.telegram_id,
+                u.first_name,
+                u.last_name,
+                u.username,
+                s.expires_at,
+                s.status
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.id
+            ORDER BY s.expires_at DESC
+        """)
+        all_subs = await cursor.fetchall()
+
+    if not all_subs:
+        base_text = "Нет подписок в базе."
     else:
-        base_text = "<b>Активные подписчики:</b>\n\n"
-        for tg_id, first, last, username, exp in subs:
+        base_text = "<b>Все подписки:</b>\n\n"
+        for tg_id, first, last, username, exp, status in all_subs:
+            # Формируем имя
             name_parts = [part for part in [first, last] if part]
             display_name = " ".join(name_parts) if name_parts else "Без имени"
             if username:
                 display_name += f" (@{username})"
-            base_text += f"• {display_name} [<code>{tg_id}</code>] до {exp.split('T')[0]}\n"
 
-    # Добавляем невидимый уникальный суффикс
+            # Форматируем дату (убираем время, если нужно)
+            date_part = exp.split("T")[0] if "T" in exp else exp
+
+            # Отображаем статус цветом или пометкой (в тексте — просто скобки)
+            status_label = {
+                "active": "✅ активна",
+                "expired": "❌ истекла",
+                "cancelled": "🚫 отменена"
+            }.get(status, status)
+
+            base_text += (
+                f"• {display_name} [<code>{tg_id}</code>]\n"
+                f"  до {date_part} — {status_label}\n\n"
+            )
+
+    # Уникальный суффикс для обхода кэширования Telegram
     unique_text = base_text + f"\u200B{random.randint(1, 999999)}"
 
     await callback.message.edit_text(
@@ -515,6 +545,36 @@ async def check_subscriptions():
                 await bot.send_message(telegram_id, "❌ Ваша подписка истекла.")
             except:
                 pass
+
+    async with aiosqlite.connect("bot.db") as db:
+        # Находим пользователей, у которых:
+        # - есть хотя бы одна expired подписка,
+        # - и НЕТ ни одной активной (статус 'active' И expires_at >= now)
+        cursor = await db.execute("""
+            SELECT DISTINCT u.telegram_id
+            FROM subscriptions s
+            JOIN users u ON s.user_id = u.id
+            WHERE s.status = 'expired'
+              AND NOT EXISTS (
+                  SELECT 1 FROM subscriptions s2
+                  JOIN users u2 ON s2.user_id = u2.id
+                  WHERE u2.telegram_id = u.telegram_id
+                    AND s2.status = 'active'
+                    AND datetime(s2.expires_at) >= datetime(?)
+              )
+        """, (now.isoformat(),))
+        expired_without_active = await cursor.fetchall()
+
+        for (telegram_id,) in expired_without_active:
+            # Повторная проверка через функцию (опционально, для надёжности)
+            if not await has_active_subscription_by_telegram(telegram_id):
+                logger.info(f"Дополнительное удаление из канала: {telegram_id} (нет активной подписки)")
+                await remove_from_channel(telegram_id)
+                try:
+                    await bot.send_message(telegram_id, "❌ Ваша подписка истекла. Вы удалены из канала.")
+                except Exception as e:
+                    logger.warning(f"Не удалось отправить повторное уведомление {telegram_id}: {e}")
+
 
     async with aiosqlite.connect("bot.db") as db:
         cursor = await db.execute("""
