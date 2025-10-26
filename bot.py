@@ -566,8 +566,6 @@ async def send_one_time_expired_notifications():
 # === Запуск ===
 async def main():
     await init_db()
-
-    await send_one_time_expired_notifications()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_subscriptions, CronTrigger(hour=9, minute=0))
     scheduler.add_job(check_subscriptions, IntervalTrigger(hours=6))
