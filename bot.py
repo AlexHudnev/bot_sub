@@ -10,6 +10,7 @@ from aiogram import Bot, Dispatcher, Router, types
 from aiogram.types import (
     Message, InlineKeyboardButton, LabeledPrice, PreCheckoutQuery, SuccessfulPayment
 )
+from aiogram.types import BufferedInputFile
 from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.enums import ParseMode
@@ -198,13 +199,14 @@ async def cmd_start(message: Message, state: FSMContext):
         video_path = "welcome.mp4"
         if os.path.isfile(video_path):
             try:
-                with open(video_path, "rb") as video_file:
-                    await message.answer_video(
-                        video=types.BufferedInputFile(video_file.read(), filename="welcome.mp4"),
-                        caption="👋 Привет! Добро пожаловать в онлайн-салон!"
-                    )
+                with open(video_path, "rb") as f:
+                    video = BufferedInputFile(f.read(), filename="welcome.mp4")
+                await message.answer_video(
+                    video=video,
+                    caption="👋 Привет! Добро пожаловать в онлайн-салон!"
+                )
             except Exception as e:
-                logger.error(f"Ошибка отправки видео из файла: {e}")
+                logger.error(f"Ошибка отправки видео: {e}")
 
     welcome_text = (
         "🌟 Онлайн-салон \"Умный парикмахер\" 🌟\n\n"
