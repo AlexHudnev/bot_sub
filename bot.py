@@ -37,6 +37,7 @@ ADMIN_IDS = list(map(int, os.getenv("ADMIN_IDS", "").split(","))) if os.getenv("
 PROVIDER_TOKEN_YOOKASSA = os.getenv("PROVIDER_TOKEN_YOOKASSA")
 PROVIDER_TOKEN_STRIPE = os.getenv("PROVIDER_TOKEN_STRIPE")
 ITEMS_PER_PAGE = 20
+_cached_welcome_video_file_id: Optional[str] = None
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -182,6 +183,38 @@ async def remove_from_channel(telegram_id: int):
     except Exception as e:
         logger.error(f"Не удалось удалить {telegram_id}: {e}")
 
+async def send_welcome_video(message: Message):
+    global _cached_welcome_video_file_id
+
+    video_path = "welcome.mp4"
+    if not os.path.isfile(video_path):
+        logger.warning("Приветственное видео не найдено по пути: %s", video_path)
+        return
+
+    # Попытка отправить по file_id
+    if _cached_welcome_video_file_id:
+        try:
+            await message.answer_video(
+                video=_cached_welcome_video_file_id,
+                caption="👋 Привет! Добро пожаловать в онлайн-салон!"
+            )
+            return  # Успех — выходим
+        except Exception as e:
+            logger.warning(f"Не удалось отправить по file_id (возможно, устарел): {e}")
+            _cached_welcome_video_file_id = None  # Сбросим кеш
+
+    # Если file_id нет или не сработал — грузим с диска
+    try:
+        with open(video_path, "rb") as f:
+            msg = await message.answer_video(
+                video=BufferedInputFile(f.read(), filename="welcome.mp4"),
+                caption="👋 Привет! Добро пожаловать в онлайн-салон!"
+            )
+        _cached_welcome_video_file_id = msg.video.file_id
+        logger.info("Видео успешно закешировано. File ID сохранён.")
+    except Exception as e:
+        logger.error(f"Ошибка отправки видео с диска: {e}")
+
 # === Обработчики ===
 @router.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
@@ -196,17 +229,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     is_new = True
     if is_new:
-        video_path = "welcome.mp4"
-        if os.path.isfile(video_path):
-            try:
-                with open(video_path, "rb") as f:
-                    video = BufferedInputFile(f.read(), filename="welcome.mp4")
-                await message.answer_video(
-                    video=video,
-                    caption="👋 Привет! Добро пожаловать в онлайн-салон!"
-                )
-            except Exception as e:
-                logger.error(f"Ошибка отправки видео: {e}")
+        await send_welcome_video(message) 
 
     welcome_text = (
         "🌟 Онлайн-салон \"Умный парикмахер\" 🌟\n\n"
