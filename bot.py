@@ -193,7 +193,7 @@ async def cmd_start(message: Message, state: FSMContext):
         user.last_name or ""
     )
 
-    if WELCOME_VIDEO_FILE_ID:
+    if is_new and WELCOME_VIDEO_FILE_ID:
         video_id = WELCOME_VIDEO_FILE_ID.strip()
         if video_id.startswith("BAAC"):
             try:
