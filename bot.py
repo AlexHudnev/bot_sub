@@ -193,7 +193,7 @@ async def cmd_start(message: Message, state: FSMContext):
         user.last_name or ""
     )
 
-    if is_new and WELCOME_VIDEO_FILE_ID:
+    if WELCOME_VIDEO_FILE_ID:
         video_id = WELCOME_VIDEO_FILE_ID.strip()
         if video_id.startswith("BAAC"):
             try:
@@ -703,7 +703,6 @@ async def activate_valid_subscriptions():
 # === Запуск ===
 async def main():
     await init_db()
-    await activate_valid_subscriptions()
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_subscriptions, CronTrigger(hour=9, minute=0))
     scheduler.add_job(check_subscriptions, IntervalTrigger(hours=6))
