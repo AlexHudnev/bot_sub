@@ -186,7 +186,7 @@ async def remove_from_channel(telegram_id: int):
 async def send_welcome_video(message: Message):
     global _cached_welcome_video_file_id
 
-    video_path = "welcome.mp4"
+    video_path = "video.MOV"
     if not os.path.isfile(video_path):
         logger.warning("Приветственное видео не найдено по пути: %s", video_path)
         return
@@ -207,7 +207,7 @@ async def send_welcome_video(message: Message):
     try:
         with open(video_path, "rb") as f:
             msg = await message.answer_video(
-                video=BufferedInputFile(f.read(), filename="welcome.mp4"),
+                video=BufferedInputFile(f.read(), filename="video.MOV"),
                 caption="👋 Привет! Добро пожаловать в онлайн-салон!"
             )
         _cached_welcome_video_file_id = msg.video.file_id
