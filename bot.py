@@ -195,7 +195,7 @@ async def cmd_start(message: Message, state: FSMContext):
 
     is_new = True
     if is_new:
-        video_path = "/db/welcome.mp4"
+        video_path = "welcome.mp4"
         if os.path.isfile(video_path):
             try:
                 with open(video_path, "rb") as video_file:
