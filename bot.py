@@ -193,13 +193,18 @@ async def cmd_start(message: Message, state: FSMContext):
         user.last_name or ""
     )
 
-    if is_new and WELCOME_VIDEO_FILE_ID:
-        video_id = WELCOME_VIDEO_FILE_ID.strip()
-        if video_id.startswith("BAAC"):
+    is_new = True
+    if is_new:
+        video_path = "/db/welcome.mp4"
+        if os.path.isfile(video_path):
             try:
-                await message.answer_video(video=video_id, caption="👋 Привет! Добро пожаловать в онлайн-салон!")
+                with open(video_path, "rb") as video_file:
+                    await message.answer_video(
+                        video=types.BufferedInputFile(video_file.read(), filename="welcome.mp4"),
+                        caption="👋 Привет! Добро пожаловать в онлайн-салон!"
+                    )
             except Exception as e:
-                logger.error(f"Ошибка видео: {e}")
+                logger.error(f"Ошибка отправки видео из файла: {e}")
 
     welcome_text = (
         "🌟 Онлайн-салон \"Умный парикмахер\" 🌟\n\n"
